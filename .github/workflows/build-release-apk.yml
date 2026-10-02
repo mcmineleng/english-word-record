@@ -26,13 +26,47 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+          # 缓存 JDK 由 runner 镜像自带，不额外处理
 
-      - name: Setup Gradle
+      - name: Cache Gradle wrapper dists
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+
+      - name: Cache Konan (KMP / Kotlin Native，若用到)
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', '**/libs.versions.toml') }}
+          restore-keys: |
+            konan-${{ runner.os }}-
+
+      - name: Cache Android AGP build-cache & deps analysis
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.android/build-cache
+            ~/.android/caches
+            android/.gradle
+          key: android-agp-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/libs.versions.toml') }}
+          restore-keys: |
+            android-agp-${{ runner.os }}-
+
+      - name: Setup Gradle (caches ~/.gradle/caches + build-cache)
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-home-cache-key-prefix: android
-          cache-read-only: false
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
           cache-cleanup: on-success
+
+      - name: Enable Gradle build cache
+        run: |
+          mkdir -p ~/.gradle
+          grep -q "org.gradle.caching=true" ~/.gradle/gradle.properties 2>/dev/null || \
+            echo -e "\norg.gradle.caching=true\norg.gradle.parallel=true" >> ~/.gradle/gradle.properties
 
       - name: Verify public.p12 at repo root
         run: |
@@ -44,10 +78,7 @@ jobs:
           if [ -n "$RELEASE_KEYSTORE_B64" ] && [ -n "$RELEASE_STORE_PASSWORD" ] \
              && [ -n "$RELEASE_KEY_ALIAS" ] && [ -n "$RELEASE_KEY_PASSWORD" ]; then
             echo "$RELEASE_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
-            if [ ! -s "$RUNNER_TEMP/release.p12" ]; then
-              echo "::error ::Decoded keystore is empty — check RELEASE_KEYSTORE_B64"
-              exit 1
-            fi
+            [ -s "$RUNNER_TEMP/release.p12" ] || { echo "::error ::Decoded keystore is empty"; exit 1; }
             ARGS+=(
               -Pandroid.injected.signing.store.file="$RUNNER_TEMP/release.p12"
               -Pandroid.injected.signing.store.password="$RELEASE_STORE_PASSWORD"
@@ -56,21 +87,16 @@ jobs:
             )
             echo "::notice ::Using REAL release signing key"
           else
-            missing=""
-            [ -z "$RELEASE_KEYSTORE_B64" ]   && missing+=" RELEASE_KEYSTORE_B64"
-            [ -z "$RELEASE_STORE_PASSWORD" ] && missing+=" RELEASE_STORE_PASSWORD"
-            [ -z "$RELEASE_KEY_ALIAS" ]      && missing+=" RELEASE_KEY_ALIAS"
-            [ -z "$RELEASE_KEY_PASSWORD" ]   && missing+=" RELEASE_KEY_PASSWORD"
-            echo "::warning ::Missing secret(s):${missing:- none-but-empty} → falling back to public.p12 (NOT TRUSTED)"
             ARGS+=(
               -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/public.p12"
               -Pandroid.injected.signing.key.alias="public"
               -Pandroid.injected.signing.store.password="public"
               -Pandroid.injected.signing.key.password="public"
             )
+            echo "::warning ::Falling back to public.p12 (NOT TRUSTED)"
           fi
-
           bash gradlew assembleRelease "${ARGS[@]}"
+
         env:
           RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
