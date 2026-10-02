@@ -1,15 +1,23 @@
 package cn.mcleng.mineleng.english.word;
 
+import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.webkit.WebViewAssetLoader;
 
-import java.io.InputStream;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -29,9 +37,15 @@ public class MainActivity extends AppCompatActivity {
 
         WebView webView = new WebView(this);
         webView.getSettings().setJavaScriptEnabled(true);
-        // 注意：不再需要 AllowUniversalAccessFromFileURLs
         webView.getSettings().setDomStorageEnabled(true);   // IndexedDB/OPFS 辅助
         webView.getSettings().setAllowFileAccess(false);
+
+        // ✅ 关键：用 WindowInsets 给 WebView 加四边 padding，避免状态栏/导航栏遮挡
+        ViewCompat.setOnApplyWindowInsetsListener(webView, (v, insets) -> {
+            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            return insets;
+        });
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -39,10 +53,10 @@ public class MainActivity extends AppCompatActivity {
                 WebResourceResponse resp = assetLoader.shouldInterceptRequest(req.getUrl());
                 // 补跨域隔离头（SQLite OPFS VFS 需要）
                 if (resp != null) {
-                    resp.setResponseHeaders(java.util.Map.of(
-                            "Cross-Origin-Opener-Policy", "same-origin",
-                            "Cross-Origin-Embedder-Policy", "require-corp"
-                    ));
+                    Map<String, String> headers = new HashMap<>();
+                    headers.put("Cross-Origin-Opener-Policy", "same-origin");
+                    headers.put("Cross-Origin-Embedder-Policy", "require-corp");
+                    resp.setResponseHeaders(headers);
                 }
                 return resp;
             }
@@ -50,15 +64,16 @@ public class MainActivity extends AppCompatActivity {
             @Override
             @SuppressWarnings("deprecation")
             public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
-                return shouldInterceptRequest(view,
-                        new android.webkit.WebResourceRequest() {
-                            @Override public android.net.Uri getUrl() { return android.net.Uri.parse(url); }
-                            @Override public java.util.Map<String, String> getRequestHeaders() { return null; }
-                            @Override public boolean isForMainFrame() { return true; }
-                            @Override public boolean hasGesture() { return false; }
-                            @Override public boolean isRedirect() { return false; }
-                            @Override public String getMethod() { return "GET"; }
-                        });
+                return shouldInterceptRequest(view, new WebResourceRequest() {
+                    @NonNull @Override public Uri getUrl() { return Uri.parse(url); }
+                    @NonNull @Override public Map<String, String> getRequestHeaders() {
+                        return Collections.emptyMap();
+                    }
+                    @Override public boolean isForMainFrame() { return true; }
+                    @Override public boolean hasGesture() { return false; }
+                    @Override public boolean isRedirect() { return false; }
+                    @NonNull @Override public String getMethod() { return "GET"; }
+                });
             }
         });
 
