@@ -20,6 +20,7 @@
   --err-soft: rgba(214,69,69,.14);
   --shadow: 0 2px 12px rgba(0,0,0,.06);
   --radius: 14px;
+  -webkit-tap-highlight-color: transparent;
 
   /* —— 非线性缓动曲线库 —— */
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
@@ -251,6 +252,17 @@ button { font: inherit; color: inherit; }
 .select-menu .item { display: flex; align-items: center; gap: 8px; }
 .select-menu .item svg { width: 16px; height: 16px; opacity: .8; }
 
+/* —— 下拉菜单：关闭动画 —— */
+.select-menu.closing {
+  animation: none;
+  opacity: 0;
+  transform: translateY(-6px) scale(.94);
+  transition:
+    opacity .18s var(--ease-out-quart),
+    transform .2s var(--ease-out-quart);
+  pointer-events: none;
+}
+
 /* =========================================================
  *  抽屉
  * ========================================================= */
@@ -300,6 +312,7 @@ button { font: inherit; color: inherit; }
   border-radius: 10px;
   cursor: pointer;
   font-size: 14px;
+  min-width: 0;
   opacity: 0;
   transform: translateX(-14px);
   transition:
@@ -329,6 +342,37 @@ button { font: inherit; color: inherit; }
   transition: transform .4s var(--ease-spring);
 }
 .drawer .book-item:hover svg { transform: scale(1.15) rotate(-4deg); }
+
+/* —— 书名文本：允许收缩、超出省略 —— */
+.drawer .book-item > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* —— 三点按钮：压小、靠右、不撑高 —— */
+.drawer .book-item .more-btn {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  min-height: 26px;
+  margin-left: 4px;
+  padding: 0;
+  border-radius: 8px;
+  flex: 0 0 auto;
+}
+.drawer .book-item .more-btn svg {
+  width: 16px;
+  height: 16px;
+  opacity: .7;
+  transform: none;
+}
+.drawer .book-item:hover .more-btn svg {
+  transform: scale(1.1);
+  opacity: 1;
+}
 
 .drawer .action-item {
   display: flex;
@@ -457,9 +501,10 @@ button { font: inherit; color: inherit; }
 
 /* =========================================================
  *  泡泡
+ *  —— 用 absolute + 页面坐标，避免 fixed 包含块被 transform 影响
  * ========================================================= */
 .bubble {
-  position: fixed;
+  position: absolute;
   z-index: 90;
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -486,6 +531,17 @@ button { font: inherit; color: inherit; }
 }
 .bubble .icon-btn { width: 36px; height: 36px; border-radius: 50%; }
 .bubble .icon-btn svg { width: 18px; height: 18px; }
+
+/* —— 泡泡：关闭动画 —— */
+.bubble.closing {
+  animation: none;
+  opacity: 0;
+  transform: scale(.7) translateY(6px);
+  transition:
+    opacity .18s var(--ease-out-quart),
+    transform .22s var(--ease-out-quart);
+  pointer-events: none;
+}
 
 /* =========================================================
  *  空状态
