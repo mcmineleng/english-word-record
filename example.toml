@@ -1,0 +1,81 @@
+[metadata]
+uuid = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5a"
+name = "基础单词测试"
+level = "初级"
+desc = "一个简单的单词测试文件，包含常用词汇和释义"
+
+[word.1]
+text = "apple"
+phonetic = "/ˈæp.əl/"
+
+[word.1.para.n]
+text = "不是苹果"
+
+[word.2]
+text = "run"
+phonetic = "/rʌn/"
+
+[word.2.para.v]
+text = "跑；奔跑"
+
+[word.2.para.n]
+text = "奔跑；一段跑步"
+
+[word.3]
+text = "happy"
+phonetic = "/ˈhæp.i/"
+
+[word.3.para.adj]
+text = "快乐的；幸福的"
+
+[word.4]
+text = "quickly"
+phonetic = "/ˈkwɪk.li/"
+
+[word.4.para.adv]
+text = "快速地；迅速地"
+
+[word.5]
+text = "beautiful"
+phonetic = "/ˈbjuː.tɪ.fəl/"
+
+[word.5.para.adj]
+text = "美丽的；漂亮的"
+
+[word.6]
+text = "read"
+phonetic = "/riːd/"
+
+[word.6.para.v]
+text = "阅读；朗读"
+
+[word.7]
+text = "book"
+phonetic = "/bʊk/"
+
+[word.7.para.n]
+text = "书；书籍"
+
+[word.7.para.v]
+text = "预订；预约"
+
+[word.8]
+text = "in"
+phonetic = "/ɪn/"
+
+[word.8.para.prep]
+text = "在……里面；在……内"
+
+[word.9]
+text = "and"
+phonetic = "/ænd/"
+
+[word.9.para.conj]
+text = "和；并且"
+
+[word.10]
+text = "very"
+phonetic = "/ˈver.i/"
+
+[word.10.para.adv]
+text = "非常；很"
