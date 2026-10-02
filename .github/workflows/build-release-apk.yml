@@ -1,51 +1,15 @@
-name: Build Release APK
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-env:
-  GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx2g"
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    # 👇 所有步骤默认在 android/ 下执行
-    defaults:
-      run:
-        working-directory: android
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up JDK 21 (Temurin)
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      # 官方 Gradle 缓存：main 写回，PR 只读
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          # 缓存键带 android/ 子工程标识，避免和其他平台混
-          gradle-home-cache-key-prefix: android
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
-          cache-cleanup: on-success
-
-      - name: Build release APK (real key if secrets exist)
+      - name: Build release APK (real key if ALL secrets exist)
         run: |
           ARGS=()
-          if [ -n "$RELEASE_KEYSTORE_B64" ]; then
+          # 四者联合判断：全有才用真实密钥，缺一个就回退公共密钥
+          if [ -n "$RELEASE_KEYSTORE_B64" ] && [ -n "$RELEASE_STORE_PASSWORD" ] \
+             && [ -n "$RELEASE_KEY_ALIAS" ] && [ -n "$RELEASE_KEY_PASSWORD" ]; then
             echo "$RELEASE_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+            # 简单校验文件非空
+            if [ ! -s "$RUNNER_TEMP/release.p12" ]; then
+              echo "::error ::Decoded keystore is empty — check RELEASE_KEYSTORE_B64"
+              exit 1
+            fi
             ARGS+=(
               -Pandroid.injected.signing.store.file="$RUNNER_TEMP/release.p12"
               -Pandroid.injected.signing.store.password="$RELEASE_STORE_PASSWORD"
@@ -54,33 +18,24 @@ jobs:
             )
             echo "::notice ::Using REAL release signing key"
           else
-            echo "::warning ::No release key secret found, signing with android/public.p12 (NOT TRUSTED)"
+            # 明确告知缺了哪些，方便排查
+            missing=""
+            [ -z "$RELEASE_KEYSTORE_B64" ]   && missing+=" RELEASE_KEYSTORE_B64"
+            [ -z "$RELEASE_STORE_PASSWORD" ] && missing+=" RELEASE_STORE_PASSWORD"
+            [ -z "$RELEASE_KEY_ALIAS" ]      && missing+=" RELEASE_KEY_ALIAS"
+            [ -z "$RELEASE_KEY_PASSWORD" ]   && missing+=" RELEASE_KEY_PASSWORD"
+            echo "::warning ::Missing secret(s):${missing:- none-but-empty} → falling back to public.p12 (NOT TRUSTED)"
             ARGS+=(
               -Pandroid.injected.signing.store.file="public.p12"
-              -Pandroid.injected.signing.store.password="changeit"
               -Pandroid.injected.signing.key.alias="public"
+              -Pandroid.injected.signing.store.password="changeit"
               -Pandroid.injected.signing.key.password="changeit"
             )
           fi
 
           ./gradlew assembleRelease "${ARGS[@]}"
-
         env:
           RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-
-      - name: Show APK cert fingerprint
-        run: |
-          APK=$(ls app/build/outputs/apk/release/*.apk | head -n1)
-          keytool -printcert -jarfile "$APK" | grep -E "SHA256|SHA1|Owner" || true
-
-      - name: Upload release APK
-        uses: actions/upload-artifact@v5
-        with:
-          name: app-release-apk
-          # ⚠️ upload-artifact 不继承 working-directory，要写全路径
-          path: android/app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
-          retention-days: 14
