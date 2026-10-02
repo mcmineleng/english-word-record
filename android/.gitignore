@@ -1,2 +1,6 @@
 .gradle
 build
+*.p12
+*.bks
+*.jks
+*.keystore
