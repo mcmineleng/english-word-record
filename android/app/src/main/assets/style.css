@@ -17,6 +17,7 @@
   --err: #d64545;
   --shadow: 0 2px 12px rgba(0,0,0,.06);
   --radius: 14px;
+  -webkit-tap-highlight-color: transparent;
 }
 
 @media (prefers-color-scheme: dark) {
