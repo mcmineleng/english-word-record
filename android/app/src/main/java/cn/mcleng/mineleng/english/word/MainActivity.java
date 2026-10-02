@@ -4,10 +4,12 @@ import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
-import android.webkit.JavascriptInterface;
+import android.view.Gravity;
+import android.view.View;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -15,25 +17,27 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
+import androidx.webkit.WebMessageCompat;
 import androidx.webkit.WebViewAssetLoader;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
-import androidx.webkit.WebMessageCompat;
-import androidx.webkit.WebMessagePortCompat;
 
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,47 +48,50 @@ public class MainActivity extends AppCompatActivity {
     private static final String VIRTUAL_HOST = "https://appassets.androidplatform.net/";
     private static final String BRIDGE_NAME = "AndroidBridge";
 
-    private static final int REQ_SAVE = 2001;   // 二进制流式下载
+    private static final int REQ_SAVE = 2001;
     private static final int REQ_PICK = 1001;
 
     private WebViewAssetLoader assetLoader;
     private WebView webView;
 
-    /** 每个下载任务的运行时状态。 */
+    // ---------- 下载任务 ----------
     private static class Task {
         final String id;
         String name;
         String mime;
-        long total;              // -1 表示未知
-        long written;
-        OutputStream os;         // 写文件流（SAF 返回后打开）
-        boolean safResolved;     // 用户是否已经选完路径
-        boolean safCanceled;     // 用户取消了 SAF
-        boolean finished;
-        // 数据还没写出去时先缓存在内存（SAF 弹窗期间到达的 chunk）
-        final java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+        long total = -1;
+        long written = 0;
+        boolean finished = false;
+        final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
 
         Task(String id) { this.id = id; }
     }
 
     private final Map<String, Task> tasks = new ConcurrentHashMap<>();
-    private final Map<String, String> pendingSafTaskId = new ConcurrentHashMap<>(); // requestCode 区分不了，用单个 pending 也行
+    private volatile Task currentBinaryTask = null;
     private String activeSafTaskId = null;
-    private int activeSafRequestCode = -1;
 
+    // ---------- 文件选择 ----------
     private ValueCallback<Uri[]> fileCallback;
 
+    // ---------- 悬浮进度视图 ----------
+    private LinearLayout floatingView;
+    private TextView tvTitle;
+    private TextView tvProgress;
+    private ProgressBar pbProgress;
+    private long lastUiUpdate = 0;
+
     // ============================================================
-    // 注入脚本：网页端零改动，纯注入拦截
+    // 注入脚本：网页端零改动
     // ============================================================
     private static final String BOOTSTRAP_JS = """
     (function(){
       if (window.__dlShimReady) return;
       window.__dlShimReady = true;
 
-      var CHUNK = 512 * 1024;              // 每块 512KB
-      var blobMap = new Map();             // blobUrl -> Blob
-      var MAX_BLOB_CACHE = 32;             // 防内存泄漏
+      var CHUNK = 512 * 1024;
+      var blobMap = new Map();
+      var MAX_BLOB_CACHE = 32;
 
       function cacheBlob(url, blob){
         blobMap.set(url, blob);
@@ -94,7 +101,6 @@ public class MainActivity extends AppCompatActivity {
         }
       }
 
-      // ---- 1. 劫持 createObjectURL，从源头截住 Blob ----
       var _createObjectURL = URL.createObjectURL;
       URL.createObjectURL = function(obj){
         var url = _createObjectURL.call(URL, obj);
@@ -102,10 +108,9 @@ public class MainActivity extends AppCompatActivity {
         return url;
       };
 
-      // ---- 2. 发送工具：ArrayBuffer 直接走 WebMessage ----
       function post(msg){ try { AndroidBridge.postMessage(msg); } catch(e){} }
-
       function sendControl(obj){ post(JSON.stringify(obj)); }
+      function newId(){ return 'dl_' + Date.now() + '_' + Math.random().toString(36).slice(2); }
 
       function sendBlob(blob, name, id){
         name = name || 'download';
@@ -118,10 +123,8 @@ public class MainActivity extends AppCompatActivity {
           function pump(){
             if (off >= u8.length) { sendControl({ cmd:'end', id:id }); return; }
             var end = Math.min(off + CHUNK, u8.length);
-            // 关键：切片后是 ArrayBuffer，走二进制通道，不经过 Base64/JSON
             post(u8.subarray(off, end).slice().buffer);
             off = end;
-            // 让出主线程，避免长任务卡 UI
             setTimeout(pump, 0);
           }
           pump();
@@ -130,7 +133,6 @@ public class MainActivity extends AppCompatActivity {
         });
       }
 
-      // ---- 3. data URL 处理（base64 与非 base64 都覆盖）----
       function sendDataUrl(href, name, id){
         name = name || 'download';
         var comma = href.indexOf(',');
@@ -141,7 +143,6 @@ public class MainActivity extends AppCompatActivity {
         var mime = (meta.split(';')[0] || 'application/octet-stream');
 
         if (isBase64) {
-          // Base64 无法避免（data URL 本身就是 base64），但分块解码，避免大字符串 OOM
           var raw = payload.replace(/\\s/g, '');
           var total = Math.floor(raw.length * 3 / 4);
           sendControl({ cmd:'begin', id:id, name:name, mime:mime, total:total, base64:true });
@@ -155,7 +156,6 @@ public class MainActivity extends AppCompatActivity {
           }
           pumpB64();
         } else {
-          // 非 base64：URL 解码后转 UTF-8 字节
           var text;
           try { text = decodeURIComponent(payload); } catch(e){ text = payload; }
           var bytes = new TextEncoder().encode(text);
@@ -165,12 +165,10 @@ public class MainActivity extends AppCompatActivity {
         }
       }
 
-      // ---- 4. 统一入口 ----
       function handleHref(href, name, id){
         if (!href) return false;
         if (href.startsWith('blob:')) {
           if (blobMap.has(href)) { sendBlob(blobMap.get(href), name, id); return true; }
-          // 兜底：blob 已被 revoke 或不是本上下文创建，尝试 fetch
           fetch(href).then(function(r){ return r.blob(); })
                      .then(function(b){ sendBlob(b, name, id); })
                      .catch(function(e){ sendControl({cmd:'error', id:id, msg:String(e)}); });
@@ -180,9 +178,6 @@ public class MainActivity extends AppCompatActivity {
         return false;
       }
 
-      function newId(){ return 'dl_' + Date.now() + '_' + Math.random().toString(36).slice(2); }
-
-      // ---- 5. 拦截 <a download> 的 click 事件 ----
       document.addEventListener('click', function(e){
         var a = e.target && e.target.closest ? e.target.closest('a[download]') : null;
         if (!a) return;
@@ -191,7 +186,6 @@ public class MainActivity extends AppCompatActivity {
         if (handleHref(href, name, newId())) e.preventDefault();
       }, true);
 
-      // ---- 6. 拦截 a.click() 程序化触发 ----
       var _click = HTMLAnchorElement.prototype.click;
       HTMLAnchorElement.prototype.click = function(){
         var href = this.getAttribute('href') || '';
@@ -200,7 +194,6 @@ public class MainActivity extends AppCompatActivity {
         return _click.apply(this, arguments);
       };
 
-      // ---- 7. 拦截 window.open(blob:) ----
       var _open = window.open;
       window.open = function(url){
         if (typeof url === 'string' && url.startsWith('blob:') && blobMap.has(url)) {
@@ -210,9 +203,7 @@ public class MainActivity extends AppCompatActivity {
         return _open.apply(window, arguments);
       };
 
-      // ---- 8. 兜底：捕获未处理错误 ----
       window.addEventListener('error', function(ev){
-        // 不做 UI，只在控制台留痕，避免干扰站点
         console.warn('[dl-shim]', ev.message);
       });
     })();
@@ -224,6 +215,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         getWindow().setStatusBarColor(Color.TRANSPARENT);
         getWindow().setNavigationBarColor(Color.TRANSPARENT);
@@ -241,7 +233,8 @@ public class MainActivity extends AppCompatActivity {
         webView.getSettings().setDomStorageEnabled(true);
         webView.getSettings().setAllowFileAccess(false);
         webView.getSettings().setAllowContentAccess(false);
-        webView.getSettings().setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        webView.getSettings().setMixedContentMode(
+                android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
 
         setupBridge();
         setupWebViewClients();
@@ -252,6 +245,9 @@ public class MainActivity extends AppCompatActivity {
         root.addView(webView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
+
+        initFloatingView(root);
+
         ViewCompat.setOnApplyWindowInsetsListener(root, (v, insets) -> {
             Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
             v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
@@ -261,14 +257,112 @@ public class MainActivity extends AppCompatActivity {
     }
 
     // ============================================================
+    // 纯 Java 悬浮进度视图
+    // ============================================================
+    private void initFloatingView(FrameLayout root) {
+        float density = getResources().getDisplayMetrics().density;
+
+        floatingView = new LinearLayout(this);
+        floatingView.setOrientation(LinearLayout.VERTICAL);
+
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xCC000000);
+        bg.setCornerRadius(12 * density);
+        floatingView.setBackground(bg);
+
+        int padH = (int) (16 * density);
+        int padV = (int) (12 * density);
+        floatingView.setPadding(padH, padV, padH, padV);
+        floatingView.setVisibility(View.GONE);
+
+        tvTitle = new TextView(this);
+        tvTitle.setText("正在处理 Blob 数据");
+        tvTitle.setTextColor(0xFFFFFFFF);
+        tvTitle.setTextSize(13);
+        floatingView.addView(tvTitle);
+
+        tvProgress = new TextView(this);
+        tvProgress.setText("0 MiB / 0 MiB");
+        tvProgress.setTextColor(0xFFFFFFFF);
+        tvProgress.setTextSize(13);
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        tp.topMargin = (int) (4 * density);
+        tvProgress.setLayoutParams(tp);
+        floatingView.addView(tvProgress);
+
+        pbProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        pbProgress.setMax(100);
+        pbProgress.setProgress(0);
+        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(
+                (int) (220 * density),
+                (int) (4 * density));
+        pp.topMargin = (int) (8 * density);
+        pbProgress.setLayoutParams(pp);
+        floatingView.addView(pbProgress);
+
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT);
+        lp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+        lp.bottomMargin = (int) (48 * density);
+        root.addView(floatingView, lp);
+    }
+
+    private void showProgress(String name, long written, long total) {
+        if (floatingView == null) return;
+        floatingView.setVisibility(View.VISIBLE);
+
+        String writtenStr = formatSize(written);
+        if (total > 0) {
+            String totalStr = formatSize(total);
+            int pct = (int) (written * 100 / total);
+            tvTitle.setText("正在处理 Blob 数据");
+            tvProgress.setText("处理进度：" + writtenStr + " / " + totalStr);
+            pbProgress.setProgress(pct);
+        } else {
+            tvTitle.setText("正在处理 Blob 数据");
+            tvProgress.setText("已处理：" + writtenStr);
+            pbProgress.setProgress(0);
+        }
+    }
+
+    private void setProgressReady() {
+        if (floatingView == null) return;
+        tvTitle.setText("数据处理完成");
+        tvProgress.setText("请选择保存位置");
+        pbProgress.setProgress(100);
+    }
+
+    private void hideProgress() {
+        if (floatingView != null) floatingView.setVisibility(View.GONE);
+    }
+
+    private void maybeUpdateProgress(String name, long written, long total) {
+        long now = System.currentTimeMillis();
+        if (now - lastUiUpdate < 100 && written < total) return;
+        lastUiUpdate = now;
+        runOnUiThread(() -> showProgress(name, written, total));
+    }
+
+    private static String formatSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        double kb = bytes / 1024.0;
+        if (kb < 1024) return String.format(Locale.US, "%.1f KiB", kb);
+        double mb = kb / 1024.0;
+        if (mb < 1024) return String.format(Locale.US, "%.1f MiB", mb);
+        double gb = mb / 1024.0;
+        return String.format(Locale.US, "%.2f GiB", gb);
+    }
+
+    // ============================================================
     // WebMessageCompat 桥
     // ============================================================
     private void setupBridge() {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)
                 || !WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-            // 极老 WebView 兜底：退回到 addJavascriptInterface（此路径不支持二进制）
-            Log.w(TAG, "WebMessage ArrayBuffer 不受支持，退回到 JS Interface");
-            webView.addJavascriptInterface(new LegacyBridge(), BRIDGE_NAME);
+            Log.e(TAG, "当前 WebView 不支持 ArrayBuffer 消息，无法处理 blob 下载");
             return;
         }
 
@@ -292,12 +386,12 @@ public class MainActivity extends AppCompatActivity {
     private void onBinaryChunk(byte[] data) {
         if (data == null || data.length == 0) return;
         Task t = currentBinaryTask;
-        if (t == null) return;
+        if (t == null) {
+            Log.w(TAG, "binary chunk dropped: no current task, len=" + data.length);
+            return;
+        }
         writeToTask(t, data);
     }
-
-    /** 当前正在接收二进制块的下载任务（单任务串行即可，因为 JS 端一次只会 pump 一个任务）。 */
-    private volatile Task currentBinaryTask = null;
 
     private void onControl(String json) {
         try {
@@ -313,21 +407,19 @@ public class MainActivity extends AppCompatActivity {
                     boolean isBase64 = o.optBoolean("base64", false);
                     t.mime = t.mime.isEmpty() ? "application/octet-stream" : t.mime;
                     tasks.put(id, t);
-                    currentBinaryTask = isBase64 ? null : t; // base64 走字符串通道
-                    if (isBase64) {
-                        // base64 任务：用单独 buffer 暂存解码结果
-                        // 这里直接用 Task.buffer 存解码后的字节
-                    } else {
-                        // 立即拉起 SAF
-                        launchSaf(t, REQ_SAVE, t.mime, t.name);
-                    }
+                    currentBinaryTask = isBase64 ? null : t;
+                    runOnUiThread(() -> showProgress(t.name, 0, t.total));
+                    Log.d(TAG, "begin id=" + id + " name=" + t.name
+                            + " total=" + t.total + " base64=" + isBase64);
                     break;
                 }
                 case "end": {
                     Task t = tasks.get(id);
                     if (t != null) {
                         t.finished = true;
-                        finishTask(t);
+                        Log.d(TAG, "end id=" + id + " buffered=" + t.buffer.size());
+                        runOnUiThread(this::setProgressReady);
+                        launchSaf(t, t.mime, t.name);
                     }
                     break;
                 }
@@ -336,20 +428,18 @@ public class MainActivity extends AppCompatActivity {
                     if (t == null) break;
                     String b64 = o.optString("data", "");
                     byte[] decoded = android.util.Base64.decode(b64, android.util.Base64.DEFAULT);
-                    // 首个 b64chunk 到达时拉起 SAF
-                    if (!t.safResolved && !t.safCanceled) {
-                        launchSaf(t, REQ_SAVE, t.mime, t.name);
-                    }
                     writeToTask(t, decoded);
                     break;
                 }
                 case "error": {
                     Task t = tasks.remove(id);
-                    if (t != null) closeQuietly(t.os);
+                    if (currentBinaryTask == t) currentBinaryTask = null;
+                    runOnUiThread(this::hideProgress);
                     Log.w(TAG, "download error: " + o.optString("msg"));
                     break;
                 }
-                default: break;
+                default:
+                    break;
             }
         } catch (Throwable t) {
             Log.e(TAG, "onControl parse error", t);
@@ -357,52 +447,29 @@ public class MainActivity extends AppCompatActivity {
     }
 
     // ============================================================
-    // SAF / 写入
+    // 写入缓存
     // ============================================================
-    private void launchSaf(Task t, int reqCode, String mime, String name) {
-        activeSafTaskId = t.id;
-        activeSafRequestCode = reqCode;
-        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType(mime == null || mime.isEmpty() ? "application/octet-stream" : mime);
-        i.putExtra(Intent.EXTRA_TITLE, name);
-        startActivityForResult(i, reqCode);
-    }
-
     private synchronized void writeToTask(Task t, byte[] data) {
         if (t.finished) return;
         try {
-            if (t.os != null) {
-                t.os.write(data);
-                t.written += data.length;
-            } else if (!t.safCanceled) {
-                // SAF 还没返回，先缓存
-                t.buffer.write(data);
-                t.written += data.length;
-            }
+            t.buffer.write(data);
+            t.written += data.length;
+            maybeUpdateProgress(t.name, t.written, t.total);
         } catch (Throwable e) {
             Log.e(TAG, "write error", e);
         }
     }
 
-    private void finishTask(Task t) {
-        try {
-            if (t.os == null && !t.safCanceled && t.buffer.size() > 0) {
-                // SAF 还没回来，标记等到 onActivityResult 一起 flush
-                t.finished = true; // 保持 buffer 直到写盘
-                return;
-            }
-            if (t.os != null) {
-                t.os.flush();
-                t.os.close();
-            }
-        } catch (Throwable e) {
-            Log.e(TAG, "finish error", e);
-        } finally {
-            t.os = null;
-            if (currentBinaryTask == t) currentBinaryTask = null;
-            tasks.remove(t.id);
-        }
+    // ============================================================
+    // SAF
+    // ============================================================
+    private void launchSaf(Task t, String mime, String name) {
+        activeSafTaskId = t.id;
+        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType(mime == null || mime.isEmpty() ? "application/octet-stream" : mime);
+        i.putExtra(Intent.EXTRA_TITLE, name);
+        startActivityForResult(i, REQ_SAVE);
     }
 
     @Override
@@ -413,38 +480,29 @@ public class MainActivity extends AppCompatActivity {
             String id = activeSafTaskId;
             activeSafTaskId = null;
             Task t = id == null ? null : tasks.get(id);
-            if (t == null) return;
-
-            t.safResolved = true;
-            if (res == Activity.RESULT_OK && data != null && data.getData() != null) {
-                try {
-                    t.os = getContentResolver().openOutputStream(data.getData(), "wt");
-                    if (t.os == null) throw new Exception("openOutputStream returned null");
-                    // 把缓存中的字节 flush 出去
-                    if (t.buffer.size() > 0) {
-                        t.os.write(t.buffer.toByteArray());
-                        t.buffer.reset();
+            if (t != null) {
+                if (res == Activity.RESULT_OK && data != null && data.getData() != null) {
+                    OutputStream os = null;
+                    try {
+                        os = getContentResolver().openOutputStream(data.getData(), "wt");
+                        if (os == null) throw new Exception("openOutputStream returned null");
+                        byte[] all = t.buffer.toByteArray();
+                        os.write(all);
+                        os.flush();
+                        Log.d(TAG, "saved id=" + id + " bytes=" + all.length);
+                    } catch (Throwable e) {
+                        Log.e(TAG, "open/write error", e);
+                    } finally {
+                        if (os != null) try { os.close(); } catch (Throwable ignored) {}
                     }
-                    if (t.finished) {
-                        t.os.flush();
-                        t.os.close();
-                        t.os = null;
-                        tasks.remove(t.id);
-                        if (currentBinaryTask == t) currentBinaryTask = null;
-                    }
-                } catch (Throwable e) {
-                    Log.e(TAG, "open output error", e);
-                    closeQuietly(t.os);
-                    tasks.remove(t.id);
-                    if (currentBinaryTask == t) currentBinaryTask = null;
+                } else {
+                    Log.d(TAG, "saf canceled id=" + id);
                 }
-            } else {
-                // 用户取消 SAF：丢弃任务
-                t.safCanceled = true;
-                closeQuietly(t.os);
+                t.buffer.reset();
                 tasks.remove(t.id);
                 if (currentBinaryTask == t) currentBinaryTask = null;
             }
+            runOnUiThread(this::hideProgress);
             return;
         }
 
@@ -458,17 +516,14 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void closeQuietly(OutputStream os) {
-        if (os != null) try { os.close(); } catch (Throwable ignored) {}
-    }
-
     // ============================================================
     // WebViewClient / WebChromeClient
     // ============================================================
     private void setupWebViewClients() {
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
-            public boolean onShowFileChooser(WebView w, ValueCallback<Uri[]> cb, FileChooserParams p) {
+            public boolean onShowFileChooser(WebView w, ValueCallback<Uri[]> cb,
+                                             FileChooserParams p) {
                 fileCallback = cb;
                 Intent intent;
                 try {
@@ -486,21 +541,20 @@ public class MainActivity extends AppCompatActivity {
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
-            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
+            public WebResourceResponse shouldInterceptRequest(WebView view,
+                                                              WebResourceRequest req) {
                 return assetLoader.shouldInterceptRequest(req.getUrl());
             }
 
             @Override
             public void onPageStarted(WebView view, String url, Bitmap fav) {
                 super.onPageStarted(view, url, fav);
-                // 页面开始时就注入 bootstrap（早点劫持 createObjectURL / click）
                 view.evaluateJavascript(BOOTSTRAP_JS, null);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                // 再注入一次，覆盖 SPA 动态路由
                 view.evaluateJavascript(BOOTSTRAP_JS, null);
             }
 
@@ -516,20 +570,11 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // 老式下载（http/https 直链）走系统
         webView.setDownloadListener((url, ua, disp, mime, len) -> {
             if (url.startsWith("http://") || url.startsWith("https://")) {
                 startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
             }
         });
-    }
-
-    // ============================================================
-    // 极老 WebView 的降级桥（不支持 ArrayBuffer）
-    // ============================================================
-    private class LegacyBridge {
-        @JavascriptInterface public void postMessage(String ignored) {}
-        @JavascriptInterface public void postMessage(byte[] ignored) {}
     }
 
     @Override
