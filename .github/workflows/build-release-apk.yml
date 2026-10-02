@@ -31,8 +31,12 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-home-cache-key-prefix: android
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+          cache-read-only: false
           cache-cleanup: on-success
+
+      - name: Verify public.p12 at repo root
+        run: |
+          ls -l "$GITHUB_WORKSPACE/public.p12" || { echo "::error ::public.p12 not found at repo root"; exit 1; }
 
       - name: Build release APK (real key if ALL secrets exist)
         run: |
@@ -59,14 +63,13 @@ jobs:
             [ -z "$RELEASE_KEY_PASSWORD" ]   && missing+=" RELEASE_KEY_PASSWORD"
             echo "::warning ::Missing secret(s):${missing:- none-but-empty} → falling back to public.p12 (NOT TRUSTED)"
             ARGS+=(
-              -Pandroid.injected.signing.store.file="public.p12"
+              -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/public.p12"
               -Pandroid.injected.signing.key.alias="public"
               -Pandroid.injected.signing.store.password="public"
               -Pandroid.injected.signing.key.password="public"
             )
           fi
 
-          # 不用 ./gradlew（避免 Permission denied），改用 bash 调用
           bash gradlew assembleRelease "${ARGS[@]}"
         env:
           RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
