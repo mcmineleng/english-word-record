@@ -767,6 +767,7 @@ button { font: inherit; color: inherit; }
   }
 }
 
+
 /* =========================================================
  *  无障碍
  * ========================================================= */
@@ -775,5 +776,60 @@ button { font: inherit; color: inherit; }
     animation-duration: .01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: .01ms !important;
+  }
+}
+
+
+/* =========================================================
+ *  定位按钮 & 定位高亮
+ * ========================================================= */
+.word-card { position: relative; }
+
+.word-card.has-locate .word-head { padding-right: 40px; }
+
+.word-card .locate-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  z-index: 2;
+  opacity: .85;
+  animation: locate-btn-in .32s var(--ease-spring) both;
+}
+.word-card .locate-btn:hover {
+  background: var(--primary);
+  color: #fff;
+  opacity: 1;
+  transform: scale(1.08);
+}
+.word-card .locate-btn:active { transform: scale(.9); }
+.word-card .locate-btn svg { width: 17px; height: 17px; }
+
+@keyframes locate-btn-in {
+  0%   { opacity: 0; transform: scale(.5) rotate(-25deg); }
+  60%  { opacity: 1; transform: scale(1.08) rotate(4deg); }
+  100% { opacity: .85; transform: scale(1) rotate(0); }
+}
+
+/* 定位后的脉冲高亮 */
+.word-card.locate-highlight {
+  border-color: var(--primary);
+  animation: locate-pulse 1.6s var(--ease-out-quart);
+}
+@keyframes locate-pulse {
+  0%   { box-shadow: var(--shadow), 0 0 0 0 rgba(59,110,245,.5); }
+  60%  { box-shadow: var(--shadow), 0 0 0 20px rgba(59,110,245,0); }
+  100% { box-shadow: var(--shadow), 0 0 0 0 rgba(59,110,245,0); }
+}
+
+@media (prefers-color-scheme: dark) {
+  @keyframes locate-pulse {
+    0%   { box-shadow: var(--shadow), 0 0 0 0 rgba(109,141,255,.55); }
+    60%  { box-shadow: var(--shadow), 0 0 0 20px rgba(109,141,255,0); }
+    100% { box-shadow: var(--shadow), 0 0 0 0 rgba(109,141,255,0); }
   }
 }

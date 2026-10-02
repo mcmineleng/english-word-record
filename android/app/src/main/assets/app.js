@@ -73,6 +73,7 @@ function iconOk()   { return svg('M4 12.5l5 5L20 6.5', { strokeWidth: '2.6' }); 
 function iconErr()  { return svg('M6 6l12 12M18 6L6 18', { strokeWidth: '2.6' }); }
 function iconScale(){ return svg('M3 17l6-6 4 4 8-8M21 7v5h-5', { strokeWidth: '2' }); }
 function iconMore() { return svg('M12 5.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm0 5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm0 5a1.5 1.5 0 110 3 1.5 1.5 0 010-3z', { fill: 'currentColor', stroke: 'none' }); }
+function iconLocate() { return svg('M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 110-5 2.5 2.5 0 010 5z', { fill: 'currentColor', stroke: 'none' }); }
 function sortIcon(kind) {
   if (kind === 'ok')    return iconOk();
   if (kind === 'err')   return iconErr();
@@ -1332,7 +1333,7 @@ function renderSortSelect() {
 /* =========================================================
  *  卡片池（keyed 复用）
  * ========================================================= */
-const cardPool = new Map();     // key -> { el, okNum, errNum, word, unsub }
+const cardPool = new Map();     // key -> { el, okNum, errNum, word, unsub, locateBtn }
 let cardObserver = null;
 let poolBookUuid = null;
 
@@ -1395,6 +1396,16 @@ function createCard(word, uuid, count) {
   actions.appendChild(errBtn); actions.appendChild(errNum);
   el.appendChild(actions);
 
+  // —— 定位按钮（仅在搜索状态下显示） ——
+  const locateBtn = h('button', { class: 'icon-btn locate-btn', title: '定位到此处' });
+  locateBtn.appendChild(iconLocate());
+  locateBtn.style.display = 'none';
+  locateBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    locateWord(word.key);
+  });
+  el.appendChild(locateBtn);
+
   // 订阅计数变化 —— 卡片自己的数字自动更新
   const unsub = subscribeCount((u, k, t, v) => {
     if (u !== uuid || k !== word.key) return;
@@ -1405,7 +1416,7 @@ function createCard(word, uuid, count) {
   // 入场动画：新卡才 observe
   getCardObserver().observe(el);
 
-  return { el, okNum, errNum, word, unsub };
+  return { el, okNum, errNum, word, unsub, locateBtn };
 }
 
 function teardownCards() {
@@ -1435,6 +1446,7 @@ function renderCards() {
 
   const words = getVisibleWords(book);
   const c = getCount(book.uuid);
+  const searching = !!(state.search || '').trim();
 
   // 空结果：清场 + 可能显示提示
   if (!words.length) {
@@ -1444,7 +1456,7 @@ function renderCards() {
     }
     cardPool.clear();
     els.cards.replaceChildren();
-    if ((state.search || '').trim()) {
+    if (searching) {
       els.cards.appendChild(h('div', { class: 'search-empty', text: '没有匹配的单词' }));
     }
     return;
@@ -1473,6 +1485,11 @@ function renderCards() {
       entry.okNum.textContent = String(c.success[w.key] || 0);
       entry.errNum.textContent = String(c.error[w.key] || 0);
     }
+
+    // 同步定位按钮可见性
+    if (entry.locateBtn) entry.locateBtn.style.display = searching ? '' : 'none';
+    entry.el.classList.toggle('has-locate', searching);
+
     frag.appendChild(entry.el); // 自动从旧位置 detach
   }
 
@@ -1484,6 +1501,42 @@ function renderAll() {
   renderBookSelect();
   renderSortSelect();
   renderCards();
+}
+
+/* =========================================================
+ *  定位（搜索 → 关闭搜索并滚动到对应卡片）
+ * ========================================================= */
+function locateWord(wordKey) {
+  if (!(state.search || '').trim()) return;
+
+  // 关闭搜索状态
+  state.search = '';
+  if (els.searchInput) els.searchInput.value = '';
+  if (els.searchClear) els.searchClear.style.display = 'none';
+  closeBubble();
+  renderCards();
+
+  // 等布局稳定后再测量并滚动
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const entry = cardPool.get(wordKey);
+    if (!entry) return;
+    const el = entry.el;
+
+    // 强制显示（跳过入场动画，避免滚动到一半还在淡入）
+    el.classList.remove('is-hidden');
+    el.classList.add('is-visible');
+    getCardObserver().unobserve(el);
+
+    const topbarH = els.topbar ? els.topbar.getBoundingClientRect().height : 0;
+    const offset = topbarH + 16;
+    const rect = el.getBoundingClientRect();
+    const targetY = Math.max(0, window.scrollY + rect.top - offset);
+    window.scrollTo({ top: targetY, behavior: 'smooth' });
+
+    // 高亮提示
+    el.classList.add('locate-highlight');
+    setTimeout(() => el.classList.remove('locate-highlight'), 1800);
+  }));
 }
 
 /* =========================================================
