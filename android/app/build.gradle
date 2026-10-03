@@ -34,39 +34,41 @@ dependencies {
     implementation "androidx.webkit:webkit:1.10.0"
 }
 
-def webDir = file("../../web")
-def assetsDir = file("src/main/assets")
+// ---- 网页资源同步任务（配置缓存安全版）----
+def webDirProvider = layout.projectDirectory.dir('../../web')
+def assetsDirProvider = layout.projectDirectory.dir('src/main/assets')
 
-task syncWebToAssets {
-    inputs.dir webDir
-    outputs.dir assetsDir
+tasks.register('syncWebToAssets') {
+    // 用 Provider 在配置阶段锁定路径，执行阶段不再引用 Project
+    inputs.dir(webDirProvider)
+    outputs.dir(assetsDirProvider)
 
     doLast {
+        def webDir = webDirProvider.asFile
+        def assetsDir = assetsDirProvider.asFile
+
         if (!webDir.exists() || !webDir.isDirectory()) {
             throw new GradleException("网页资源目录不存在，拷贝失败！")
         }
 
-        // 2. 清空 assets（含隐藏文件）
+        // 清空 assets（整目录删除后重建，避免 fileTree 触发配置缓存问题）
         if (assetsDir.exists()) {
-            fileTree(assetsDir).visit { f ->
-                if (f.file.isFile()) f.file.delete()
-                else if (f.file != assetsDir && f.isDirectory()) f.file.deleteDir()
-            }
-        } else {
-            assetsDir.mkdirs()
+            assetsDir.deleteDir()
         }
+        assetsDir.mkdirs()
 
-        // 3. 平铺复制
-        ant.copy(todir: assetsDir, overwrite: true) {
-            fileset(dir: webDir)
+        // 平铺复制：用 project.copy，闭包内不访问 fileTree / ant
+        project.copy {
+            from(webDir)
+            into(assetsDir)
         }
         println "网页资源拷贝完成"
     }
 }
 
-
+// ---- 让 assemble / bundle / build 依赖该任务 ----
 tasks.whenTaskAdded { t ->
-    if (t.name.matches(~/(assemble|bundle).*|build/)) {
+    if (t.name.matches(/(assemble|bundle).*|build/)) {
         t.dependsOn syncWebToAssets
     }
 }
