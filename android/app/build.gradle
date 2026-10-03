@@ -5,7 +5,7 @@ plugins {
 android {
     namespace 'cn.mcleng.mineleng.english.word'
     compileSdk 36
-    buildToolsVersion "36.0.0"   // ← 显式指定，用本地已装好的 37.0.0
+    buildToolsVersion "36.0.0"
 
     defaultConfig {
         applicationId "cn.mcleng.mineleng.english.word"
@@ -32,4 +32,41 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
     implementation "androidx.webkit:webkit:1.10.0"
+}
+
+def webDir = file("../web")
+def assetsDir = file("src/main/assets")
+
+task syncWebToAssets {
+    inputs.dir webDir
+    outputs.dir assetsDir
+
+    doLast {
+        if (!webDir.exists() || !webDir.isDirectory()) {
+            throw new GradleException("网页资源目录不存在，拷贝失败！")
+        }
+
+        // 2. 清空 assets（含隐藏文件）
+        if (assetsDir.exists()) {
+            fileTree(assetsDir).visit { f ->
+                if (f.file.isFile()) f.file.delete()
+                else if (f.file != assetsDir && f.isDirectory()) f.file.deleteDir()
+            }
+        } else {
+            assetsDir.mkdirs()
+        }
+
+        // 3. 平铺复制
+        ant.copy(todir: assetsDir, overwrite: true) {
+            fileset(dir: webDir)
+        }
+        println "网页资源拷贝完成"
+    }
+}
+
+
+tasks.whenTaskAdded { t ->
+    if (t.name.matches(~/(assemble|bundle).*|build/)) {
+        t.dependsOn syncWebToAssets
+    }
 }
