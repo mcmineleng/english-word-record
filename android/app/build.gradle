@@ -38,37 +38,28 @@ dependencies {
 def webDirProvider = layout.projectDirectory.dir('../../web')
 def assetsDirProvider = layout.projectDirectory.dir('src/main/assets')
 
-tasks.register('syncWebToAssets') {
-    // 用 Provider 在配置阶段锁定路径，执行阶段不再引用 Project
-    inputs.dir(webDirProvider)
-    outputs.dir(assetsDirProvider)
+// 用 Sync 类型：会自动清理目标目录中不再存在的文件，替代手写 deleteDir
+tasks.register('syncWebToAssets', Sync) {
+    from(webDirProvider)
+    into(assetsDirProvider)
 
-    doLast {
-        def webDir = webDirProvider.asFile
-        def assetsDir = assetsDirProvider.asFile
-
-        if (!webDir.exists() || !webDir.isDirectory()) {
+    doFirst {
+        if (!webDirProvider.asFile.exists()) {
             throw new GradleException("网页资源目录不存在，拷贝失败！")
         }
-
-        // 清空 assets（整目录删除后重建，避免 fileTree 触发配置缓存问题）
-        if (assetsDir.exists()) {
-            assetsDir.deleteDir()
-        }
-        assetsDir.mkdirs()
-
-        // 平铺复制：用 project.copy，闭包内不访问 fileTree / ant
-        project.copy {
-            from(webDir)
-            into(assetsDir)
-        }
-        println "网页资源拷贝完成"
     }
+
+    // 确保任务在有变化时才运行
+    outputs.upToDateWhen { true }
 }
 
-// ---- 让 assemble / bundle / build 依赖该任务 ----
-tasks.whenTaskAdded { t ->
-    if (t.name.matches(/(assemble|bundle).*|build/)) {
-        t.dependsOn syncWebToAssets
-    }
+// ---- 让所有 merge*Assets / assemble / bundle 任务依赖 sync ----
+// 关键：mergeXxxAssets 读取 assets，必须显式声明依赖
+tasks.matching { it.name.startsWith('merge') && it.name.endsWith('Assets') }.configureEach {
+    dependsOn('syncWebToAssets')
+}
+
+tasks.matching { it.name == 'assembleRelease' || it.name == 'assembleDebug' 
+             || it.name == 'bundleRelease' || it.name == 'bundleDebug' }.configureEach {
+    dependsOn('syncWebToAssets')
 }
